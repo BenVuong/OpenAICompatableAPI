@@ -84,16 +84,6 @@ class ChatCompletionChunkResponse(BaseModel):
     model: str = "your-langchain-model"
     choices: List[ChatCompletionChunkChoice]
 
-
-
-model = ChatOllama(model="gemma3:12b")
-
-
-chain = model | StrOutputParser()
-
-
-
-
 @app.post("//chat/completions")
 async def chat_completions_endpoint(request: ChatCompletionRequest):
     """
