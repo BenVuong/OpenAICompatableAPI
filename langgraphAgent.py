@@ -165,9 +165,9 @@ prompt = ChatPromptTemplate.from_messages(
 )
 
 model = ChatOllama(model="gpt-oss:20b")
-# model = ChatOpenAI(model="gpt-4o")
+#model = ChatOpenAI(model="gpt-4o")
 model_with_tools = model.bind_tools(tools)
-tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
+tokenizer = tiktoken.encoding_for_model("gpt-4o")
 
 
 def agent(state: State) -> State:
@@ -223,11 +223,11 @@ graph = builder.compile(checkpointer=memory)
 
 
 
-def streamLanggraph(prompt: str):
-    config = {"configurable": {"user_id": "1", "thread_id": "1"}}
+def streamLanggraph(prompt, threadID: str):
+    config = {"configurable": {"user_id": "1", "thread_id": threadID}}
 
     # Stream the response from the graph
-    for chunk in graph.stream({"messages": [("user", prompt)]}, config=config, stream_mode="values"):
+    for chunk in graph.stream({"messages": prompt}, config=config, stream_mode="values"):
         # The final AI response is in the 'agent' node's output
         if isinstance(chunk["messages"][-1], AIMessage) and not chunk["messages"][-1].tool_calls:
             yield chunk["messages"][-1].content
