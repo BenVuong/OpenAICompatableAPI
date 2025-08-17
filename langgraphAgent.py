@@ -1,9 +1,10 @@
 import asyncio
 from typing import List, Literal
+import subprocess
 import os
 import uuid
-import sqlite3
-import subprocess
+from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from composio_langchain import ComposioToolSet
 import tiktoken
 from langchain_core.documents import Document
@@ -11,36 +12,28 @@ from langchain_core.messages import get_buffer_string, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-from langchain_ollama import ChatOllama
-from langchain_openai.embeddings import OpenAIEmbeddings
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams, PayloadSchemaType
+from qdrant_client.http.models import Distance, VectorParams
 from browser_use.llm import ChatOpenAI as browserChat
 from browser_use import Agent
 from dotenv import load_dotenv
+
 load_dotenv(override=True)
 
-qdrantClient = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=os.getenv("QDRANT_API_KEY"))
+qdrantClient = QdrantClient(path="db/tmp/langchain_qdrant")
 
 if not qdrantClient.collection_exists("LongTermMemory"):
     qdrantClient.create_collection(
         collection_name="LongTermMemory",
-        vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+        vectors_config=VectorParams(size=768, distance=Distance.COSINE),
     )
 
-qdrantClient.create_payload_index(
-    collection_name="LongTermMemory",
-    field_name="metadata.user_id",
-    field_schema=PayloadSchemaType.KEYWORD,
-)
 
 recall_vector_store = QdrantVectorStore(client=qdrantClient, collection_name="LongTermMemory",
-                                        embedding=OpenAIEmbeddings(model="text-embedding-3-small"))
+                                        embedding=OllamaEmbeddings(model="nomic-embed-text:v1.5"))
 
 
 def get_user_id(config: RunnableConfig) -> str:
@@ -70,7 +63,7 @@ def useBrowserSearch(instruction: str) -> str:
 
 @tool
 def save_recall_memory(memory: str, config: RunnableConfig) -> str:
-    """Save memory to vectorstore for later semantic retrieval."""
+    """Save memory to vectorstore for later semantic retrieval. memory should be a full sentence with as much information as possible"""
     user_id = get_user_id(config)
     document = Document(
         page_content=memory,
@@ -116,7 +109,7 @@ def osTerminalCommandTool(command: str) -> str:
 composio_toolset = ComposioToolSet(os.getenv("COMPOSIO_API_KEY"))
 
 composioTools = composio_toolset.get_tools(actions=['GOOGLECALENDAR_CREATE_EVENT', 'GOOGLETASKS_LIST_TASK_LISTS','GOOGLETASKS_LIST_TASKS','GOOGLETASKS_CREATE_TASK_LIST','GOOGLETASKS_GET_TASK_LIST', 'GOOGLETASKS_INSERT_TASK', 'GOOGLETASKS_DELETE_TASK', 'GOOGLECALENDAR_GET_CALENDAR'])
-tools = [save_recall_memory, search_recall_memories, useBrowserSearch, osTerminalCommandTool] + composioTools
+tools = [save_recall_memory, search_recall_memories, useBrowserSearch, osTerminalCommandTool]
 
 class State(MessagesState):
     recall_memories: List[str]
@@ -146,10 +139,11 @@ prompt = ChatPromptTemplate.from_messages(
             "8. Recognize and acknowledge changes in the user's situation or perspectives over time.\n"
             "9. Leverage memories to provide personalized examples and analogies.\n"
             "10. Recall past challenges or successes to inform current problem-solving.\n\n"
+            "REMEMBER when using the save_recall_memory tool, your input memory should be full sentence with as much information as possible. This is so that when you look back at these memories you would have enough information to use"
             "## Recall Memories\n"
             "Recall memories are contextually retrieved based on the current conversation:\n{recall_memories}\n\n"
             "## Instructions\n"
-            "Engage with the user naturally, as a trusted colleague or friend."
+            "Engage with the user naturally"
             " There's no need to explicitly mention your memory capabilities."
             " Instead, seamlessly incorporate your understanding of the user"
             " into your responses. Be attentive to subtle cues and underlying"
@@ -168,6 +162,7 @@ model = ChatOllama(model="gpt-oss:20b")
 #model = ChatOpenAI(model="gpt-4o")
 model_with_tools = model.bind_tools(tools)
 tokenizer = tiktoken.encoding_for_model("gpt-4o")
+
 
 
 def agent(state: State) -> State:
@@ -211,24 +206,23 @@ builder.add_node("load_memories", load_memories)
 builder.add_node("agent", agent)
 builder.add_node("tools", ToolNode(tools))
 
-# Add edges to the graph
+# Add edges
 builder.add_edge(START, "load_memories")
 builder.add_edge("load_memories", "agent")
 builder.add_conditional_edges("agent", route_tools)
 builder.add_edge("tools", "agent")
 
 # Compile the graph
-memory = SqliteSaver(conn=sqlite3.connect("db/checkpoints.sqlite", check_same_thread=False))
-graph = builder.compile(checkpointer=memory)
+graph = builder.compile()
 
-
-
-def streamLanggraph(prompt, threadID: str):
-    config = {"configurable": {"user_id": "1", "thread_id": threadID}}
+def streamLanggraph(prompt):
+    config = {"configurable": {"user_id": "1", "thread_id": "1"}}
 
     # Stream the response from the graph
     for chunk in graph.stream({"messages": prompt}, config=config, stream_mode="values"):
+        
         # The final AI response is in the 'agent' node's output
         if isinstance(chunk["messages"][-1], AIMessage) and not chunk["messages"][-1].tool_calls:
             yield chunk["messages"][-1].content
+   
 

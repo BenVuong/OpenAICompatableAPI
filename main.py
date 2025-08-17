@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langchain.schema.output_parser import StrOutputParser
 from langgraphAgent import streamLanggraph
@@ -84,6 +84,11 @@ class ChatCompletionChunkResponse(BaseModel):
     model: str = "your-langchain-model"
     choices: List[ChatCompletionChunkChoice]
 
+
+
+
+
+
 @app.post("//chat/completions")
 async def chat_completions_endpoint(request: ChatCompletionRequest):
     """
@@ -91,65 +96,64 @@ async def chat_completions_endpoint(request: ChatCompletionRequest):
     and now supports streaming responses.
     """
     print(f"Received request for model: {request.model}, stream: {request.stream}")
+  
     
-    for message in request.messages:
-        if message.role == "system" and message.content != "[Start a new Chat]":
-            threadID = message.content
-            print(f"Found System message. Thread ID: {threadID}")
-
-    # Extract content from the user message
-    # We only process the last message, assuming it's the current user prompt.
-    user_message = request.messages[-1]
-    
-    # Process the messages to create the LangChain input
+    # Process the entire chat history from the request
     langchain_messages = []
-    
-    # The OpenAI format for multi-modal messages is a list of content blocks.
-    # We need to iterate through these and format them for LangChain.
-    # The `user_message.content` can be either a string or a list of `MessageContent` objects.
-    if isinstance(user_message.content, str):
-        # Handle the case where the content is a simple text string
-        langchain_messages.append({"type": "text", "text": user_message.content})
-    elif isinstance(user_message.content, list):
-        for part in user_message.content:
-            if part.type == "text":
-                print(f"Processing text content: {part.text}")
-                langchain_messages.append({"type": "text", "text": part.text})
-            elif part.type == "image_url":
-                # Extract the URL from the nested dictionary
-                image_url = part.image_url.get("url")
-                
-                if image_url:
-                    if image_url.startswith("data:image"):
-                        print("Processing base64 image content.")
-                        # LangChain's model will handle the decoding from the data URI
-                        langchain_messages.append({"type": "image_url", "image_url": {"url": image_url}})
-                        print("Image content prepared for LangChain.")
-                    else:
-                        # For simplicity, this example only handles base64 images.
-                        # To support URLs, you would need to add logic to fetch the image.
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Only base64-encoded images are supported in this implementation for now."
-                        )
-                else:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="The 'image_url' object must contain a 'url' key."
-                    )
+
+    for message in request.messages:
+        # Check for the system message and save its content to threadID
+        if message.role == "system" and message.content != "[Start a new chat]":
+            langchain_messages.append(SystemMessage(message.content))
+            
+        elif message.role == "user":
+            content_list = []
+            if isinstance(message.content, str):
+                content_list.append({"type": "text", "text": message.content})
+            elif isinstance(message.content, list):
+                for part in message.content:
+                    if part.type == "text":
+                        print(f"Processing text content: {part.text}")
+                        content_list.append({"type": "text", "text": part.text})
+                    elif part.type == "image_url":
+                        # Extract the URL from the nested dictionary
+                        image_url = part.image_url.get("url")
+                        
+                        if image_url:
+                            if image_url.startswith("data:image"):
+                                print("Processing base64 image content.")
+                                content_list.append({"type": "image_url", "image_url": {"url": image_url}})
+                                print("Image content prepared for LangChain.")
+                            else:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail="Only base64-encoded images are supported in this implementation for now."
+                                )
+                        else:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="The 'image_url' object must contain a 'url' key."
+                            )
+            langchain_messages.append(HumanMessage(content=content_list))
+
+        elif message.role == "assistant":
+            # Assistant messages are typically just text
+            if isinstance(message.content, str):
+                langchain_messages.append(AIMessage(content=message.content))
             else:
+                # Handle cases where assistant might have a different content type
+                # For this example, we'll just handle text content.
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Unsupported message content type: {part.type}"
+                    detail="Assistant messages must be a simple text string."
                 )
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported content format: {type(user_message.content)}"
-        )
-    
-    # Create the HumanMessage for LangChain
-    langchain_input = [HumanMessage(content=langchain_messages)]
+        else:
+            # Optionally handle other roles like 'tool' if needed.
+            # For now, we'll ignore them.
+            pass
+
+    # The input for the chain is now the full history
+    langchain_input = langchain_messages
     
     # Check if the user requested a streaming response
     if request.stream:
@@ -174,7 +178,7 @@ async def chat_completions_endpoint(request: ChatCompletionRequest):
             
             # Stream the response from the LangChain model
             try:
-                for text_chunk in streamLanggraph(langchain_input, threadID):
+                for text_chunk in streamLanggraph(langchain_input):
                     # Each chunk from astream is a string
                     if text_chunk:
                         chunk_data = ChatCompletionChunkResponse(
@@ -213,7 +217,7 @@ async def chat_completions_endpoint(request: ChatCompletionRequest):
     else:
         try:
             print("Invoking LangChain model (non-streaming)...")
-            response_text = "".join(streamLanggraph(langchain_input, threadID))
+            response_text = "".join(streamLanggraph(langchain_input))
             print("Received response from LangChain.")
         except Exception as e:
             print(f"An error occurred with LangChain: {e}")
