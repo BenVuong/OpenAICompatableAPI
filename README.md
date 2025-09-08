@@ -4,7 +4,7 @@ A simple fast api server that is open-ai compatable that can be used in SillyTav
 ## About
 This is a fastapi server that emulates an OpenAI compatable api. It uses the //chat/completions api endpoint.
 I built this so that I could integrate my langgraph agent code into a frontend like SillyTavern. With SillyTavern it already has 3D avatars and TTS available.
-My Langgraph agent has access to tools that can it can use to assist you. With this you can incorpate your own LLM/Agent code logic.
+My Langgraph agent has access to tools that it can use to assist you. With this you can incorpate your own LLM/Agent code logic.
 
 ## Demo Video
 A demo video showcasing my langgraph agent code being integrated with SillyTavern frontend
